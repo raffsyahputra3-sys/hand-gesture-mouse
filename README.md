@@ -1,5 +1,9 @@
 # Hand Gesture Mouse Controller
 
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Platform Windows](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#syarat)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 Kendalikan pointer laptop tanpa mouse fisik — cukup pakai tangan + webcam laptop. Gratis, tanpa hardware tambahan.
 
 ## Fitur
@@ -159,17 +163,22 @@ saat tangan diam, dan telat ~30 ms saat tangan bergerak cepat.
 ## Struktur
 ```
 hand-gesture-mouse/
-├── hand_mouse.py      # Main script (single file)
+├── hand_mouse.py      # Main script
+├── smoothing.py       # One Euro filter + velocity predictor
+├── benchmark.py       # Benchmark offline (tanpa kamera)
+├── config.yaml        # Konfigurasi (tanpa rebuild)
 ├── JALANKAN.bat       # Launcher Windows (klik 2x)
 ├── requirements.txt   # Dependencies
+├── LICENSE            # MIT
 └── README.md          # Dokumentasi ini
 ```
 
 ## Roadmap
-- v1.1 Drag & drop (cubit tahan)
-- v1.2 Media control (play/pause, volume)
-- v1.3 Double click
-- v1.4 GUI settings
-- v2.0 Mode presentasi
+- [x] Double click (tahan cubit 0.6 dtk)
+- [ ] v1.1 Drag & drop (cubit tahan)
+- [ ] v1.2 Media control (play/pause, volume)
+- [ ] v1.4 GUI settings
+- [ ] v2.0 Mode presentasi
 
-Lisensi: MIT (bebas pakai, open-source).
+## Lisensi
+MIT — lihat [LICENSE](LICENSE). Bebas pakai, open-source.
