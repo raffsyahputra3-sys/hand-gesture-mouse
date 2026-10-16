@@ -1,0 +1,18 @@
+# Mediapipe 1.x membuang modul mp.solutions yang dipakai script ini.
+# 0.10.21 = versi terakhir yang masih punya mp.solutions.hands.
+mediapipe==0.10.21
+
+# Mediapipe 0.10.x belum kompatibel numpy 2.x
+numpy<2
+
+# cv2 disediakan oleh opencv-contrib-python (dependency mediapipe).
+# JANGAN tambahkan opencv-python juga: keduanya menimpa folder cv2 yang sama.
+opencv-contrib-python>=4.8.0
+
+pyautogui>=0.9.41
+
+# Voice typing offline Bahasa Indonesia (Whisper). Model ~150MB diunduh otomatis
+# sekali saja saat fitur voice pertama dinyalakan (butuh internet sekali itu).
+faster-whisper>=1.0.0
+sounddevice>=0.4.6
+pyperclip>=1.8.0

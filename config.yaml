@@ -1,0 +1,39 @@
+# Hand Gesture Mouse — ubah tanpa rebuild. Restart program setelah edit.
+
+camera:
+  resolution: [480, 360]
+  target_fps: 30
+  process_width: 320
+  process_height: 240
+  model_complexity: 0
+
+pointer:
+  active_width: 0.30
+  # One Euro: rendah = halus saat diam, beta tinggi = cepat saat flick
+    filter_min_cutoff: 0.18
+    filter_beta: 0.12
+  filter_d_cutoff: 0.5
+  dead_zone_px: 2.0
+  input_dead_px: 2.5
+  # Prediksi antar frame kamera (30 Hz) supaya kursor update 60 Hz
+  render_hz: 60
+  predict_gain: 0.85
+  velocity_stop: 40.0
+  max_lead_ms: 40
+
+scroll:
+  dbl_window: 0.9
+  tahan_min: 0.18
+  gain: 28.0
+  accel: 1.8
+  momentum: 0.82
+  max_notch: 8
+
+overlay:
+  enabled: true
+  size: 110
+  hz: 60
+
+voice:
+  enabled: true
+  model: base

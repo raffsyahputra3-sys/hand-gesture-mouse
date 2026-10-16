@@ -1,5 +1,10 @@
-# Object file
-*.o
-
-# Ada Library Information
-*.ali
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+model/*.pt
+model/*.bin
+model/*.onnx
+*.log
+.DS_Store
