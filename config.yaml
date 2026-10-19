@@ -10,8 +10,8 @@ camera:
 pointer:
   active_width: 0.30
   # One Euro: rendah = halus saat diam, beta tinggi = cepat saat flick
-    filter_min_cutoff: 0.18
-    filter_beta: 0.12
+  filter_min_cutoff: 0.18
+  filter_beta: 0.12
   filter_d_cutoff: 0.5
   dead_zone_px: 2.0
   input_dead_px: 2.5
@@ -20,6 +20,9 @@ pointer:
   predict_gain: 0.85
   velocity_stop: 40.0
   max_lead_ms: 40
+  # Ease gerak kursor di laju render (mulus antar frame kamera).
+  # Naikkan kalau masih patah-patah; 0 = mati (paling responsif, agak patah).
+  glide_ms: 28
 
 scroll:
   dbl_window: 0.9

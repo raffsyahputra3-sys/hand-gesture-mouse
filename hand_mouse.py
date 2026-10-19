@@ -11,7 +11,7 @@ Kontrol:
     - Cubit jempol + jari manis         -> Klik kiri
     - Tahan cubit manis 0.6 dtk         -> Double click (buka aplikasi)
     - Cubit jempol + kelingking         -> Klik kanan
-    - Cubit manis 2x lalu tahan + usap  -> Scroll (atas/bawah, pointer beku)
+    - Cubit jempol + telunjuk + usap    -> Scroll (atas/bawah, pointer beku)
     - Telunjuk+tengah+manis naik + jempol nempel kelingking -> Voice typing on/off
     - Tekan 'q' di preview window       -> Keluar
 """
@@ -27,7 +27,7 @@ import cv2
 import mediapipe as mp
 import pyautogui
 
-from smoothing import OneEuroFilter, VelocityPredictor
+from smoothing import OneEuroFilter, OutputSmoother, VelocityPredictor
 
 
 # ================= FR-08: Konfigurasi =================
@@ -47,6 +47,9 @@ RENDER_HZ = 60
 PREDICT_GAIN = 0.45
 VELOCITY_STOP = 60.0
 MAX_LEAD_MS = 25.0
+# Ease output di laju render biar gerak kursor mulus di antara frame kamera.
+# Naikkan kalau masih terasa patah-patah; turunkan (atau 0) kalau terasa lambat.
+GLIDE_MS = 28.0
 SCROLL_ACCEL = 1.8
 SCROLL_MOMENTUM = 0.82
 SCROLL_MAX_NOTCH = 8
@@ -75,11 +78,17 @@ PINCH_FRAMES = 3                # Frame kamera berturut-turut (bukan loop) sebel
 PINCH_MARGIN = 0.03             # Selisih rasio minimum biar satu jari dinyatakan pemenang
 PINCH_ON_KIRI = 0.42            # Khusus manis (klik kiri): longgar, jarinya pendek & susah rapat
 PINCH_OFF_KIRI = 0.62
-PINCH_ON_KANAN = 0.35           # Khusus kelingking (klik kanan): sedang
-PINCH_OFF_KANAN = 0.55
-SCROLL_DBL_WINDOW = 0.9         # Jeda max cubit manis ke-1 -> ke-2 biar dianggap pola scroll
-SCROLL_TAHAN_MIN = 0.18         # Cubitan ke-2 harus ditahan selama ini biar jadi scroll
-                                # (dilepas sebelum itu = klik kiri biasa, jadi double-tap tetap bisa klik 2x)
+# Kelingking lebih pendek dari manis dan menekuk lebih dalam saat dicubit jempol,
+# jadi ambangnya WAJIB lebih longgar dari manis -- bukan lebih ketat. Nilai lama
+# (on 0.35) bikin klik kanan nyaris tidak pernah sah.
+PINCH_ON_KANAN = 0.45           # Khusus kelingking (klik kanan): longgar
+PINCH_OFF_KANAN = 0.65
+# Scroll: cubit jempol+telunjuk lalu usap vertikal. Telunjuk panjang jadi cubit
+# gampang rapat; ambang bisa sedang.
+PINCH_ON_SCROLL = 0.38
+PINCH_OFF_SCROLL = 0.55
+SCROLL_DBL_WINDOW = 0.9         # (tak terpakai lagi; disimpan agar config lama tetap kebaca)
+SCROLL_TAHAN_MIN = 0.18         # (tak terpakai lagi; disimpan agar config lama tetap kebaca)
 SCROLL_GAIN = 28.0              # Notch scroll untuk usapan setinggi 1 frame penuh
 MIN_FINGER_REACH = 0.95         # Ujung jari harus >= sejauh ini x jarak pangkalnya
 # Jari manis lebih pendek dan mencubitnya menekuk lebih dalam daripada jari
@@ -88,8 +97,10 @@ MIN_REACH_MANIS = 0.70
 # Gerbang pointer (jempol+tengah) menekuk jari tengah, jadi ambangnya
 # sedikit dilonggarkan biar cubit normal tetap dianggap sah.
 MIN_REACH_TENGAH_AKTIF = 0.85
-# Kelingking pendek seperti manis, pakai ambang longgar yang sama.
-MIN_REACH_KELINGKING = 0.80
+# Kelingking pendek seperti manis DAN menekuk lebih dalam saat dicubit, jadi
+# ambang terulurnya harus lebih longgar lagi -- kalau tidak, cubitan kelingking
+# yang sah ikut terblokir dan klik kanan tidak pernah terdeteksi.
+MIN_REACH_KELINGKING = 0.60
 
 # Ambang jari dianggap berdiri/terulur. Diukur sebagai rasio jangkauan dari
 # pergelangan, bukan "ujung di atas sendi": perbandingan vertikal gagal begitu
@@ -182,6 +193,7 @@ def apply_config(cfg):
         ("pointer", "predict_gain"): "PREDICT_GAIN",
         ("pointer", "velocity_stop"): "VELOCITY_STOP",
         ("pointer", "max_lead_ms"): "MAX_LEAD_MS",
+        ("pointer", "glide_ms"): "GLIDE_MS",
         ("scroll", "dbl_window"): "SCROLL_DBL_WINDOW",
         ("scroll", "tahan_min"): "SCROLL_TAHAN_MIN",
         ("scroll", "gain"): "SCROLL_GAIN",
@@ -589,35 +601,38 @@ class CameraStream:
     dari buffer driver dan pointer terasa tertinggal dari tangan.
     """
 
-    def __init__(self, index=0, resolution=CAMERA_RESOLUTION, fps=TARGET_FPS):
-        backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
-        self.cap = cv2.VideoCapture(index, backend)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
-        self.cap.set(cv2.CAP_PROP_FPS, fps)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    def __init__(self, cap, index=0, backend_nama=""):
+        self.cap = cap
+        self.index = index
+        self.backend_nama = backend_nama
+        self._frame = None
+        self._lock = threading.Lock()
+        self._running = False
+        self._thread = None
+
+    @staticmethod
+    def _konfigurasi(cap, resolution, fps):
+        """Terapkan setelan ringan (resolusi, FPS, buffer, MJPG, autofocus)."""
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
+        cap.set(cv2.CAP_PROP_FPS, fps)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         # MJPG jauh lebih ringan untuk USB webcam dibanding YUY2 mentah,
         # jadi frame sampai lebih cepat dan loop tidak kelaparan.
         try:
-            self.cap.set(cv2.CAP_PROP_FOURCC,
-                         cv2.VideoWriter_fourcc(*"MJPG"))
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         except (AttributeError, cv2.error):
             pass
         # Kunci autofocus: lensa yang hunting maju-mundur bikin seluruh gambar
         # (dan landmark) berenang -> kursor drift padahal tangan diam.
         # Diabaikan diam-diam kalau webcam tidak mendukung (kebanyakan fixed-focus).
         try:
-            self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+            cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
         except (AttributeError, cv2.error):
             pass
 
-        self._frame = None
-        self._lock = threading.Lock()
-        self._running = False
-        self._thread = None
-
     def is_opened(self):
-        return self.cap.isOpened()
+        return self.cap is not None and self.cap.isOpened()
 
     def start(self):
         self._running = True
@@ -643,7 +658,51 @@ class CameraStream:
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=1.0)
-        self.cap.release()
+        if self.cap is not None:
+            self.cap.release()
+
+
+def _daftar_backend():
+    """Backend video yang dicoba, diurut sesuai OS (yang paling cocok dulu)."""
+    if sys.platform == "win32":
+        return [(cv2.CAP_DSHOW, "DSHOW"), (cv2.CAP_MSMF, "MSMF"),
+                (cv2.CAP_ANY, "ANY")]
+    if sys.platform == "darwin":
+        return [(cv2.CAP_AVFOUNDATION, "AVFOUNDATION"), (cv2.CAP_ANY, "ANY")]
+    return [(cv2.CAP_V4L2, "V4L2"), (cv2.CAP_ANY, "ANY")]
+
+
+def buka_kamera_auto(resolution=CAMERA_RESOLUTION, fps=TARGET_FPS, max_index=4):
+    """Cari kamera yang beneran kirim frame, lintas index x backend.
+
+    Beda device beda index/backend yang jalan, dan isOpened()=True saja tidak
+    cukup (sebagian driver "terbuka" tapi gagal baca). Jadi tiap kandidat
+    diverifikasi dengan membaca frame sungguhan. Kembalikan CameraStream siap
+    pakai, atau None kalau tidak ada yang berhasil.
+    """
+    for index in range(max_index + 1):
+        for backend, nama in _daftar_backend():
+            try:
+                cap = cv2.VideoCapture(index, backend)
+            except cv2.error:
+                continue
+            if not cap.isOpened():
+                cap.release()
+                continue
+            CameraStream._konfigurasi(cap, resolution, fps)
+            # Beri driver beberapa kali coba: frame pertama sering telat datang.
+            terbaca = False
+            for _ in range(8):
+                sukses, frame = cap.read()
+                if sukses and frame is not None:
+                    terbaca = True
+                    break
+                time.sleep(0.05)
+            if terbaca:
+                print(f"[KAMERA] Terdeteksi di index {index} (backend {nama}).")
+                return CameraStream(cap, index=index, backend_nama=nama)
+            cap.release()
+    return None
 
 
 def set_high_performance():
@@ -750,13 +809,15 @@ def main():
         min_tracking_confidence=0.5,
     )
 
-    # FR-07: error jelas kalau webcam tidak ada
-    kamera = CameraStream(index=0)
-    if not kamera.is_opened():
-        print("[ERROR] Webcam tidak terdeteksi!")
-        print("  - Pastikan webcam tidak dipakai aplikasi lain (Zoom/Meet).")
-        print("  - Coba ganti index kamera: CameraStream(1).")
-        print("  - Di laptop, cek privacy settings kamera OS.")
+    # FR-07: cari kamera otomatis (index + backend apa pun yang jalan di device ini)
+    print("[KAMERA] Mencari webcam...")
+    kamera = buka_kamera_auto(CAMERA_RESOLUTION, TARGET_FPS)
+    if kamera is None:
+        print("[ERROR] Webcam tidak terdeteksi di index/backend mana pun!")
+        print("  - Pastikan webcam tidak dipakai aplikasi lain (Zoom/Meet/Camera).")
+        print("  - Cek izin kamera OS: Settings > Privacy > Camera (izinkan desktop app).")
+        print("  - Cek proteksi webcam antivirus (McAfee/AVG): izinkan Python/app ini.")
+        print("  - Webcam USB: coba cabut-colok; atau restart kalau driver nyangkut.")
         hands.close()
         return 1
     kamera.start()
@@ -764,6 +825,7 @@ def main():
     filter_x = OneEuroFilter(FILTER_MIN_CUTOFF, FILTER_BETA, FILTER_D_CUTOFF)
     filter_y = OneEuroFilter(FILTER_MIN_CUTOFF, FILTER_BETA, FILTER_D_CUTOFF)
     prediktor = VelocityPredictor(PREDICT_GAIN, VELOCITY_STOP, MAX_LEAD_MS)
+    glide = OutputSmoother(GLIDE_MS)
     last_x = last_y = None
     pointer_hidup = False
     render_berikut = 0.0
@@ -773,14 +835,11 @@ def main():
     pos_telunjuk_lama = None  # Posisi telunjuk frame kamera sebelumnya (rem drift)
     det_kiri = DetektorKlik(ambang_on=PINCH_ON_KIRI, ambang_off=PINCH_OFF_KIRI)
     det_kanan = DetektorKlik(ambang_on=PINCH_ON_KANAN, ambang_off=PINCH_OFF_KANAN)
+    det_scroll = DetektorKlik(ambang_on=PINCH_ON_SCROLL, ambang_off=PINCH_OFF_SCROLL)
     det_aktif = DetektorKlik()
     klik_terakhir = 0.0
     waktu_klik_kiri = 0.0   # Kapan klik kiri terakhir sah (buat timer double-click)
     double_sudah = False    # Sudah nembak double-click di tahan kali ini atau belum
-    scroll_armed = False    # Cubit manis ke-2 cepat terdeteksi, nunggu: tahan=scroll, lepas=klik
-    scroll_tahan = False    # Cubitan ke-2 ditahan cukup lama -> mode scroll aktif
-    klik_tertunda = False   # Klik ke-2 ditahan dulu sampai jelas dilepas atau ditahan
-    waktu_arming = 0.0      # Kapan cubitan ke-2 terdeteksi
     scroll_anchor_y = None  # Posisi Y pergelangan sebagai acuan usapan scroll
     scroll_acc_f = 0.0      # Akumulasi fraksi notch (biar usapan pelan tetap jalan)
     scroll_vel = 0.0        # Momentum notch/detik, lanjut sebentar setelah usapan berhenti
@@ -887,6 +946,7 @@ def main():
                 # saat tangan maju/mundur dari kamera
                 ukuran_tangan = max(
                     hitung_jarak_px(pos_pergelangan, pos_tengah_mcp), 1.0)
+                cubit_telunjuk = hitung_jarak_px(pos_jempol, pos_telunjuk) / ukuran_tangan
                 cubit_kiri = hitung_jarak_px(pos_jempol, pos_manis) / ukuran_tangan
                 cubit_aktif = hitung_jarak_px(pos_jempol, pos_tengah) / ukuran_tangan
                 cubit_kanan = hitung_jarak_px(pos_jempol, pos_kelingking) / ukuran_tangan
@@ -911,10 +971,17 @@ def main():
                 # Tanpa ini, jari manis yang nekuk saat pointer (jempol+tengah)
                 # jaraknya ikut kecil lalu nembak klik kiri liar.
                 # Harus dihitung SEBELUM detektor di-update (dipakai di bawah).
+                # Telunjuk (scroll) ikut jadi peserta biar satu cubitan = satu
+                # pemenang: scroll tidak nembak saat klik, klik tidak nembak saat scroll.
                 kiri_menang = (cubit_kiri + PINCH_MARGIN < cubit_aktif
-                               and cubit_kiri + PINCH_MARGIN < cubit_kanan)
+                               and cubit_kiri + PINCH_MARGIN < cubit_kanan
+                               and cubit_kiri + PINCH_MARGIN < cubit_telunjuk)
                 kanan_menang = (cubit_kanan + PINCH_MARGIN < cubit_aktif
-                                and cubit_kanan + PINCH_MARGIN < cubit_kiri)
+                                and cubit_kanan + PINCH_MARGIN < cubit_kiri
+                                and cubit_kanan + PINCH_MARGIN < cubit_telunjuk)
+                telunjuk_menang = (cubit_telunjuk + PINCH_MARGIN < cubit_aktif
+                                   and cubit_telunjuk + PINCH_MARGIN < cubit_kiri
+                                   and cubit_telunjuk + PINCH_MARGIN < cubit_kanan)
 
                 # Detektor di-update hanya saat frame kamera baru (bukan tiap loop):
                 # frame duplikat pakai data identik, jadi kalau ikut dihitung,
@@ -930,6 +997,10 @@ def main():
                     klik_kanan = det_kanan.update(
                         cubit_kanan,
                         kelingking_terbuka and kanan_menang and not voice_pose)
+                    # Scroll pakai latch "ditahan"-nya (bukan klik sekali). Telunjuk
+                    # menekuk saat dicubit, jadi gerbangnya telunjuk_menang -- bukan
+                    # syarat terulur (yang justru menolak cubitan sah).
+                    det_scroll.update(cubit_telunjuk, telunjuk_menang)
                 else:
                     klik_kiri = False
                     klik_kanan = False
@@ -947,39 +1018,34 @@ def main():
                         voice_frames = 0
                         voice.toggle()
 
-                pemenang = ('K' if kiri_menang else ('N' if kanan_menang else '-'))
-                # Angka mentah buat kalibrasi: lihat nilainya saat klik sendiri
-                info = (f"cubit mns{cubit_kiri:.2f} tgh{cubit_aktif:.2f} klk{cubit_kanan:.2f}"
+                pemenang = ('S' if telunjuk_menang else
+                            ('K' if kiri_menang else
+                             ('N' if kanan_menang else '-')))
+                # Angka mentah buat kalibrasi: lihat nilainya saat klik/scroll sendiri
+                info = (f"tlj{cubit_telunjuk:.2f} mns{cubit_kiri:.2f} "
+                        f"tgh{cubit_aktif:.2f} klk{cubit_kanan:.2f}"
                         f"  ulur {'Y' if manis_terbuka else 'n'}"
                         f"{'Y' if tengah_terbuka else 'n'}"
                         f"{'Y' if kelingking_terbuka else 'n'}"
-                        f"  menang:{pemenang}"
-                        f"  kiri<{PINCH_ON_KIRI:.2f}")
+                        f"  menang:{pemenang}")
 
                 # Prioritas gesture: klik > scroll > pointer (gerbang jempol+tengah) > standby
                 if not det_kiri.ditahan:
                     # Cubitan dilepas: reset jatah double-click tahan berikutnya
                     double_sudah = False
+                if not det_scroll.ditahan and scroll_anchor_y is not None:
+                    # Cubit jempol+telunjuk dilepas: bersihkan acuan & momentum scroll
+                    scroll_anchor_y = None
+                    scroll_acc_f = 0.0
+                    scroll_vel = 0.0
                 if klik_kiri:
-                    # Klik kiri: cubit jempol + jari manis.
-                    # Pola scroll: cubitan ke-2 yang cepat (<= SCROLL_DBL_WINDOW)
-                    # tidak langsung diklik, tapi ditahan dulu: diteruskan jadi
-                    # tahan = scroll, dilepas cepat = klik biasa (double-tap
-                    # tetap bisa klik 2x).
+                    # Klik kiri: cubit jempol + jari manis. (Scroll sekarang gestur
+                    # terpisah jempol+telunjuk, jadi di sini murni klik/double-click.)
                     if sekarang - klik_terakhir > CLICK_COOLDOWN:
-                        if sekarang - waktu_klik_kiri <= SCROLL_DBL_WINDOW:
-                            scroll_armed = True
-                            klik_tertunda = True
-                            waktu_arming = sekarang
-                            waktu_klik_kiri = sekarang
-                            scroll_anchor_y = None
-                            scroll_acc_f = 0.0
-                            status = "TAHAN UTK SCROLL"
-                        else:
-                            mouse.click_left()
-                            klik_terakhir = sekarang
-                            waktu_klik_kiri = sekarang
-                            status = "KLIK KIRI!"
+                        mouse.click_left()
+                        klik_terakhir = sekarang
+                        waktu_klik_kiri = sekarang
+                        status = "KLIK KIRI!"
                     else:
                         status = "COOLDOWN..."
                 elif klik_kanan:
@@ -990,65 +1056,37 @@ def main():
                         status = "KLIK KANAN!"
                     else:
                         status = "COOLDOWN..."
-                elif scroll_armed or scroll_tahan:
-                    # Scroll cubit-2x-tahan: cubitan manis ke-2 yang cepat masuk sini.
-                    # Tahan terus = scroll aktif (usap tangan vertikal),
-                    # dilepas cepat = klik kiri biasa.
-                    # Gerak dibaca dari pergelangan (posisi tangan keseluruhan).
-                    # Pointer sengaja dibekukan selama scroll.
-                    if det_kiri.ditahan:
-                        if (not scroll_tahan
-                                and sekarang - waktu_arming >= SCROLL_TAHAN_MIN):
-                            scroll_tahan = True
-                        if scroll_tahan:
-                            wy = pos_pergelangan[1]
-                            if scroll_anchor_y is None:
-                                scroll_anchor_y = wy
-                                status = "SCROLL"
-                            elif frame_baru:
-                                # Sumbu Y gambar ke bawah: usap ke atas = dy positif.
-                                dy = scroll_anchor_y - wy
-                                scroll_anchor_y = wy
-                                # Kecepatan dinormalisasi ke tinggi frame / detik.
-                                speed = (dy / max(tinggi_frame, 1)) / max(dt, 1e-3)
-                                boosted = speed * (1.0 + SCROLL_ACCEL * min(abs(speed), 4.0))
-                                scroll_vel = (
-                                    SCROLL_MOMENTUM * scroll_vel
-                                    + (1.0 - SCROLL_MOMENTUM) * boosted * SCROLL_GAIN)
-                            if scroll_anchor_y is not None:
-                                scroll_acc_f += scroll_vel * max(dt, 0.0)
-                                notch = int(scroll_acc_f)
-                                notch = max(-SCROLL_MAX_NOTCH, min(SCROLL_MAX_NOTCH, notch))
-                                if notch != 0:
-                                    mouse.scroll(notch)
-                                    scroll_acc_f -= notch
-                                    status = ("SCROLL UP" if notch > 0 else "SCROLL DOWN")
-                                else:
-                                    status = "SCROLL"
-                                # Rem pelan kalau tangan sudah diam, biar tidak nyangkut.
-                                if frame_baru and abs(scroll_vel) < 0.4:
-                                    scroll_vel *= 0.5
+                elif det_scroll.ditahan:
+                    # Scroll: cubit jempol+telunjuk ditahan, lalu usap tangan
+                    # vertikal. Gerak dibaca dari pergelangan (posisi tangan
+                    # keseluruhan). Pointer sengaja dibekukan selama scroll.
+                    wy = pos_pergelangan[1]
+                    if scroll_anchor_y is None:
+                        scroll_anchor_y = wy
+                        status = "SCROLL"
+                    elif frame_baru:
+                        # Sumbu Y gambar ke bawah: usap ke atas = dy positif.
+                        dy = scroll_anchor_y - wy
+                        scroll_anchor_y = wy
+                        # Kecepatan dinormalisasi ke tinggi frame / detik.
+                        speed = (dy / max(tinggi_frame, 1)) / max(dt, 1e-3)
+                        boosted = speed * (1.0 + SCROLL_ACCEL * min(abs(speed), 4.0))
+                        scroll_vel = (
+                            SCROLL_MOMENTUM * scroll_vel
+                            + (1.0 - SCROLL_MOMENTUM) * boosted * SCROLL_GAIN)
+                    if scroll_anchor_y is not None:
+                        scroll_acc_f += scroll_vel * max(dt, 0.0)
+                        notch = int(scroll_acc_f)
+                        notch = max(-SCROLL_MAX_NOTCH, min(SCROLL_MAX_NOTCH, notch))
+                        if notch != 0:
+                            mouse.scroll(notch)
+                            scroll_acc_f -= notch
+                            status = ("SCROLL UP" if notch > 0 else "SCROLL DOWN")
                         else:
-                            status = "TAHAN UTK SCROLL"
-                    else:
-                        # Cubitan dilepas: kalau belum sempat jadi scroll,
-                        # kirim klik yang tadi ditahan.
-                        if klik_tertunda and not scroll_tahan:
-                            if sekarang - klik_terakhir > CLICK_COOLDOWN:
-                                mouse.click_left()
-                                klik_terakhir = sekarang
-                                waktu_klik_kiri = sekarang
-                                status = "KLIK KIRI!"
-                            else:
-                                status = "COOLDOWN..."
-                        else:
-                            status = "SCROLL (lepas)"
-                        scroll_armed = False
-                        scroll_tahan = False
-                        klik_tertunda = False
-                        scroll_anchor_y = None
-                        scroll_acc_f = 0.0
-                        scroll_vel = 0.0
+                            status = "SCROLL"
+                        # Rem pelan kalau tangan sudah diam, biar tidak nyangkut.
+                        if frame_baru and abs(scroll_vel) < 0.4:
+                            scroll_vel *= 0.5
                 elif det_kiri.ditahan or det_kanan.ditahan:
                     # Pointer dibekukan selama cubitan klik ditahan, biar klik tidak meleset.
                     # Cubit kiri DITAHAN 0.6 dtk = double click (buat buka aplikasi).
@@ -1092,6 +1130,8 @@ def main():
                             else:
                                 sx = filter_x(pred[0], sekarang)
                                 sy = filter_y(pred[1], sekarang)
+                                # Ease akhir di laju render: mulus antar frame kamera.
+                                sx, sy = glide.update(sx, sy, sekarang)
                                 if (last_x is None
                                         or abs(sx - last_x) > DEAD_ZONE_PX
                                         or abs(sy - last_y) > DEAD_ZONE_PX):
@@ -1112,17 +1152,16 @@ def main():
                 filter_x.reset()
                 filter_y.reset()
                 prediktor.reset()
+                glide.reset()
                 pointer_hidup = False
                 last_x = last_y = None
                 pos_telunjuk_lama = None
-                scroll_armed = False
-                scroll_tahan = False
-                klik_tertunda = False
                 scroll_anchor_y = None
                 scroll_acc_f = 0.0
                 scroll_vel = 0.0
                 det_kiri.reset()
                 det_kanan.reset()
+                det_scroll.reset()
                 det_aktif.reset()
 
             # Pesan voice (toggle on/off, download model, error): tampil sesaat.

@@ -1,0 +1,17 @@
+# Versi LITE (tanpa voice typing) -- dipakai oleh SETUP.bat.
+# Gesture mouse: gerak kursor, klik kiri/kanan, double-click, scroll. Tanpa mic.
+
+# Mediapipe 1.x membuang modul mp.solutions yang dipakai script ini.
+# 0.10.21 = versi terakhir yang masih punya mp.solutions.hands.
+# Mediapipe otomatis menarik opencv-contrib-python (menyediakan cv2) + numpy.
+mediapipe==0.10.21
+
+# Mediapipe 0.10.x belum kompatibel numpy 2.x
+numpy<2
+
+pyautogui>=0.9.41
+pyperclip>=1.8.0
+
+# Opsional: biar config.yaml dibaca pakai parser YAML penuh. Tanpa ini pun jalan
+# (ada parser cadangan sederhana di hand_mouse.py).
+PyYAML>=6.0

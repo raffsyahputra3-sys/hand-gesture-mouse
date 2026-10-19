@@ -39,6 +39,38 @@ class OneEuroFilter:
         return x_hat
 
 
+class OutputSmoother:
+    """Ease posisi kursor di laju render biar mulus di antara frame kamera.
+
+    Kamera cuma ~30 Hz, tapi kita menggambar/menggerakkan kursor ~60 Hz. Tanpa ini
+    kursor "melangkah" tiap frame kamera. Ease eksponensial berbasis waktu (tahan
+    terhadap FPS yang naik-turun): makin kecil tau, makin responsif tapi kurang
+    mulus. tau <= 1ms = mati (langsung ikut target).
+    """
+
+    def __init__(self, tau_ms=28.0):
+        self.tau = max(float(tau_ms), 0.0) / 1000.0
+        self.reset()
+
+    def reset(self):
+        self.x = None
+        self.y = None
+        self.t = 0.0
+
+    def update(self, tx, ty, t):
+        if self.x is None or self.tau <= 0.001:
+            self.x, self.y, self.t = tx, ty, t
+            return tx, ty
+        dt = t - self.t
+        self.t = t
+        if dt <= 0:
+            return self.x, self.y
+        a = 1.0 - math.exp(-dt / self.tau)
+        self.x += (tx - self.x) * a
+        self.y += (ty - self.y) * a
+        return self.x, self.y
+
+
 class VelocityPredictor:
     """Dead-reckoning dari 3 sampel terakhir.
 
