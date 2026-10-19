@@ -788,6 +788,13 @@ def petakan_ke_layar(ix, iy, area, lebar_layar, tinggi_layar):
 def main():
     """Buka kamera, deteksi tangan, kirim aksi mouse."""
     apply_config(load_config())
+    # Mode lite: kalau faster-whisper tidak terpasang, matikan voice typing biar
+    # gesture voice tidak bikin bingung (dan tak perlu pose yang nyaris sama klik kanan).
+    if VOICE_ENABLED:
+        import importlib.util
+        if importlib.util.find_spec("faster_whisper") is None:
+            globals()["VOICE_ENABLED"] = False
+            print("[INFO] faster-whisper tidak ada -> voice typing nonaktif (mode lite).")
     pyautogui.FAILSAFE = False
     pyautogui.PAUSE = 0  # Default 0.1s per panggilan: cukup untuk mencekik FPS
     cv2.setUseOptimized(True)
@@ -826,6 +833,22 @@ def main():
     filter_y = OneEuroFilter(FILTER_MIN_CUTOFF, FILTER_BETA, FILTER_D_CUTOFF)
     prediktor = VelocityPredictor(PREDICT_GAIN, VELOCITY_STOP, MAX_LEAD_MS)
     glide = OutputSmoother(GLIDE_MS)
+    # Logger diagnosa klik kanan: aktif kalau env HGM_DEBUG di-set. Menulis nilai
+    # tiap frame saat jempol+kelingking didekatkan, biar ketahuan gerbang mana
+    # yang memblokir. File: debug_klik.log di folder program.
+    debug_f = None
+    if os.environ.get("HGM_DEBUG"):
+        try:
+            debug_f = open(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "debug_klik.log"),
+                "w", encoding="utf-8")
+            debug_f.write(
+                "cubit_kanan(<%.2f) klTerbuka kananMenang voicePose -> KLIK "
+                "| kiri tgh tlj  naik(T/M/R)\n" % PINCH_ON_KANAN)
+            debug_f.flush()
+        except OSError:
+            debug_f = None
     last_x = last_y = None
     pointer_hidup = False
     render_berikut = 0.0
@@ -994,13 +1017,28 @@ def main():
                 if frame_baru:
                     klik_kiri = det_kiri.update(cubit_kiri, manis_terbuka and kiri_menang)
                     det_aktif.update(cubit_aktif, tengah_terbuka)
+                    # Klik kanan = jempol+kelingking. TIDAK lagi diblokir voice_pose:
+                    # cubit jempol+kelingking dgn jari lain terangkat bentuknya SAMA
+                    # dengan pose voice, jadi gerbang itu dulu diam-diam membunuh klik
+                    # kanan. Klik kanan menang; voice pakai hold lama (det_kanan nge-latch
+                    # jadi cuma 1 klik saat pose voice ditahan).
                     klik_kanan = det_kanan.update(
                         cubit_kanan,
-                        kelingking_terbuka and kanan_menang and not voice_pose)
+                        kelingking_terbuka and kanan_menang)
                     # Scroll pakai latch "ditahan"-nya (bukan klik sekali). Telunjuk
                     # menekuk saat dicubit, jadi gerbangnya telunjuk_menang -- bukan
                     # syarat terulur (yang justru menolak cubitan sah).
                     det_scroll.update(cubit_telunjuk, telunjuk_menang)
+                    # Diagnosa: catat tiap kali jempol+kelingking didekatkan.
+                    if debug_f is not None and cubit_kanan < 0.6:
+                        debug_f.write(
+                            "kanan=%.2f kl_terbuka=%d menang=%d voice=%d -> KLIK=%d "
+                            "| kiri=%.2f tgh=%.2f tlj=%.2f naik=%d%d%d\n" % (
+                                cubit_kanan, kelingking_terbuka, kanan_menang,
+                                voice_pose, klik_kanan, cubit_kiri, cubit_aktif,
+                                cubit_telunjuk, telunjuk_naik, tengah_naik,
+                                manis_naik))
+                        debug_f.flush()
                 else:
                     klik_kiri = False
                     klik_kanan = False
@@ -1201,6 +1239,11 @@ def main():
         kamera.stop()
         cv2.destroyAllWindows()
         hands.close()
+        if debug_f is not None:
+            try:
+                debug_f.close()
+            except OSError:
+                pass
         if sys.platform == "win32":
             ctypes.windll.winmm.timeEndPeriod(1)
 

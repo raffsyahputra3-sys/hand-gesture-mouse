@@ -38,5 +38,7 @@ overlay:
   hz: 60
 
 voice:
-  enabled: true
+  # Mode mouse-only: false = gesture voice tidak aktif (pose voice nyaris sama
+  # dengan klik kanan). Set true kalau mau voice typing (butuh faster-whisper).
+  enabled: false
   model: base
