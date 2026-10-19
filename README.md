@@ -6,16 +6,27 @@
 
 Kendalikan pointer laptop tanpa mouse fisik — cukup pakai tangan + webcam laptop. Gratis, tanpa hardware tambahan.
 
+## 🚀 Cara Install (Windows — 3 langkah)
+
+1. **Download** folder ini: tombol hijau **`Code` → `Download ZIP`** di atas, lalu **extract** (klik kanan → Extract All).
+2. Klik 2x **`SETUP.bat`** — otomatis memasang Python (kalau belum ada) + semua kebutuhan. Tunggu sampai muncul **"SELESAI"** (perlu internet, sekali saja, ~300–400MB).
+3. Klik 2x **`JALANKAN.bat`** — arahkan tangan ke webcam. Selesai! 🎉
+
+> Kalau muncul peringatan **"Unknown Publisher"**, klik **Run** (wajar untuk file `.bat` buatan sendiri).
+> Mac/Linux atau mau cara manual (pip/venv)? Lihat [Setup lengkap](#setup).
+
+**Kontrol singkat:** telunjuk = gerak kursor · cubit jempol+manis = klik kiri · cubit jempol+kelingking = klik kanan · cubit jempol+telunjuk lalu usap = scroll · tekan `q` = keluar.
+
 ## Fitur
 - Gerakkan pointer: jempol nempel jari tengah + telunjuk sebagai pointer (jempol lepas = kursor diam)
 - Klik kiri: cubit jempol + jari manis
 - Double click: tahan cubit manis 0.6 detik (buat buka aplikasi/folder)
 - Klik kanan: cubit jempol + kelingking
 - Scroll: cubit jempol + telunjuk, tahan, lalu usap tangan ke atas/bawah
-- Voice typing offline Bahasa Indonesia: angkat telunjuk + tengah + manis bersamaan,
-  tempelkan jempol ke kelingking untuk on/off. Selagi on, omongan diketik otomatis
-  di aplikasi yang sedang fokus (klik dulu kolom teksnya). Model suara (~150MB)
-  diunduh otomatis sekali saja saat pertama dinyalakan (butuh internet sekali itu).
+- Voice typing offline Bahasa Indonesia _(opsional, default **mati**)_: angkat telunjuk +
+  tengah + manis bersamaan, tempelkan jempol ke kelingking untuk on/off. Selagi on,
+  omongan diketik otomatis di aplikasi yang sedang fokus. Aktifkan via `config.yaml`
+  (`voice.enabled: true`) + pasang `faster-whisper` — lihat [Voice typing](#voice-typing).
 - Preview real-time (skeleton tangan, area aktif, status gesture, FPS)
 - Keluar dengan tekan `q`
 
